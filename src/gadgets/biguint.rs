@@ -182,7 +182,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
             result_limbs.push(result);
             borrow = new_borrow;
         }
-        // Borrow should be zero here.
+        self.assert_zero_u32(borrow);
 
         BigUintTarget {
             limbs: result_limbs,
@@ -222,7 +222,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
             limbs: a
                 .limbs
                 .iter()
-                .map(|&l| U32Target(self.mul(l.0, t)))
+                .map(|&l| U32Target::new_unsafe(self.mul(l.0, t)))
                 .collect(),
         }
     }
@@ -357,7 +357,7 @@ impl CircuitBuilderBiguintFromField for CircuitBuilder<GoldilocksField, 2> {
         let max = self.constant(GoldilocksField::from_canonical_i64(0xFFFFFFFF));
         let high_minus_max = self.sub(high, max);
         self.conditional_zero(high_minus_max, low);
-        let limbs = vec![U32Target(low), U32Target(high)];
+        let limbs = vec![U32Target::new_unsafe(low), U32Target::new_unsafe(high)];
         BigUintTarget { limbs }
     }
 }

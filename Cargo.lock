@@ -366,7 +366,7 @@ dependencies = [
 [[package]]
 name = "plonky2_u32"
 version = "0.1.0"
-source = "git+https://github.com/dgulotta/plonky2-u32.git#61d7e165288100cdded7b963c6b5def3d2d4c1ec"
+source = "git+https://github.com/dgulotta/plonky2-u32.git#0dee2fbc7d6e5a4a402f3fd5a7ee4e08ade0e4c4"
 dependencies = [
  "anyhow",
  "itertools 0.10.5",
