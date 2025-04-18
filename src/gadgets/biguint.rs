@@ -247,7 +247,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         let div_num_limbs = if b_len > a_len + 1 {
             0
         } else {
-            a_len - b_len + 1
+            a_len + 1 - b_len
         };
         let div = self.add_virtual_biguint_target(div_num_limbs);
         let rem = self.add_virtual_biguint_target(b_len);
