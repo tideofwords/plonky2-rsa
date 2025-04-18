@@ -183,6 +183,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
             borrow = new_borrow;
         }
         // Borrow should be zero here.
+        self.assert_zero(borrow.0);
 
         BigUintTarget {
             limbs: result_limbs,

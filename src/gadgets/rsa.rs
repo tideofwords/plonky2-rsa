@@ -47,6 +47,7 @@ mod tests {
     use crate::gadgets::biguint::{
         BigUintTarget, CircuitBuilderBiguint, CircuitBuilderBiguintFromField, WitnessBigUint,
     };
+    use crate::rsa::{RSADigest, RSAKeypair};
     use num::{BigUint, FromPrimitive, Num};
     use plonky2::field::goldilocks_field::GoldilocksField;
     use plonky2::field::types::Field64;
@@ -116,6 +117,37 @@ mod tests {
         let (msg, s) = generate_message();
         pw.set_target_arr(&message, &msg)?;
         pw.set_biguint_target(&sig, &s)?;
+        let proof = data.prove(pw)?;
+        data.verify(proof)
+    }
+
+    #[test]
+    fn test_rsa_keygen_and_verify() -> anyhow::Result<()> {
+        let config = CircuitConfig::standard_recursion_zk_config();
+        let mut builder = CircuitBuilder::<F, D>::new(config);
+        let mut pw = PartialWitness::new();
+
+        let keypair = RSAKeypair::new();
+        let msg: Vec<GoldilocksField> = vec![12, 20, 23]
+            .iter()
+            .map(|x| GoldilocksField(*x))
+            .collect();
+        let digest = RSADigest {
+            val: compute_hash(&msg),
+        };
+        let sig_val = keypair.sign(&digest);
+        let pk = keypair.get_pubkey();
+
+        let message = builder.add_virtual_targets(3);
+        let hash = hash(&mut builder, &message);
+        let sig = builder.add_virtual_biguint_target(64);
+        let modulus = builder.constant_biguint(&pk.n);
+        verify_sig(&mut builder, &hash, &sig, &modulus);
+
+        let data = builder.build::<C>();
+
+        pw.set_target_arr(&message, &msg)?;
+        pw.set_biguint_target(&sig, &sig_val.sig)?;
         let proof = data.prove(pw)?;
         data.verify(proof)
     }
