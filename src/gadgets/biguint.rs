@@ -45,9 +45,13 @@ pub trait CircuitBuilderBiguint<F: RichField + Extendable<D>, const D: usize> {
         b: &BigUintTarget,
     ) -> (BigUintTarget, BigUintTarget);
 
+    fn eq_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BoolTarget;
+
     fn cmp_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BoolTarget;
 
     fn add_virtual_biguint_target(&mut self, num_limbs: usize) -> BigUintTarget;
+
+    fn add_virtual_public_biguint_target(&mut self, num_limbs: usize) -> BigUintTarget;
 
     /// Add two `BigUintTarget`s.
     fn add_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget;
@@ -134,6 +138,17 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         }
     }
 
+    fn eq_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BoolTarget {
+        let (a, b) = self.pad_biguints(a, b);
+
+        let mut result = self.constant_bool(true);
+        for i in 0..a.num_limbs() {
+            let limb_eq = self.is_equal(a.limbs[i].0, b.limbs[i].0);
+            result = self.and(result, limb_eq);
+        }
+        result
+    }
+
     fn cmp_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BoolTarget {
         let (a, b) = self.pad_biguints(a, b);
 
@@ -142,6 +157,15 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
 
     fn add_virtual_biguint_target(&mut self, num_limbs: usize) -> BigUintTarget {
         let limbs = self.add_virtual_u32_targets(num_limbs);
+
+        BigUintTarget { limbs }
+    }
+
+    fn add_virtual_public_biguint_target(&mut self, num_limbs: usize) -> BigUintTarget {
+        let limbs = (0..num_limbs)
+            .map(|_| self.add_virtual_public_input())
+            .map(U32Target::new_unsafe)
+            .collect();
 
         BigUintTarget { limbs }
     }

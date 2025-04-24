@@ -1,3 +1,4 @@
+use base64::prelude::*;
 use crypto_bigint::U1024;
 use crypto_primes;
 use num::{BigUint, Zero};
@@ -20,6 +21,18 @@ pub struct RSADigest {
 }
 
 impl RSAKeypair {
+    // Since WASM has 32-bit words, to properly compile this we need separate cases
+    #[cfg(target_pointer_width = "32")]
+    fn crypto_bigint_to_bigint(n: U1024) -> BigUint {
+        BigUint::from_slice(
+            &n.as_limbs()
+                .iter()
+                .map(|x| x.0 as u32)
+                .collect::<Vec<u32>>(),
+        )
+    }
+
+    #[cfg(target_pointer_width = "64")]
     fn crypto_bigint_to_bigint(n: U1024) -> BigUint {
         BigUint::from_slice(
             &n.as_limbs()
@@ -60,12 +73,34 @@ impl RSAKeypair {
             sig: msg.val.modpow(&self.sk, &self.n),
         }
     }
+
+    pub fn from_base64(public_key: &str, private_key: &str) -> Self {
+        let n_bytes = BASE64_STANDARD.decode(public_key).unwrap();
+        let n = BigUint::from_bytes_le(&n_bytes);
+
+        let sk_bytes = BASE64_STANDARD.decode(private_key).unwrap();
+        let sk = BigUint::from_bytes_le(&sk_bytes);
+
+        Self { n, sk }
+    }
 }
 
 impl RSAPubkey {
     pub fn verify(&self, msg: &RSADigest, sig: &RSASignature) -> bool {
         const CONSTANT_EXP: u32 = 65537;
         sig.sig.modpow(&BigUint::new(vec![CONSTANT_EXP]), &self.n) == msg.val
+    }
+
+    // TODO: use bincode?
+    // TODO: better error handling
+    pub fn base64(&self) -> String {
+        BASE64_STANDARD.encode(self.n.to_bytes_le())
+    }
+
+    pub fn from_base64(base64_str: &str) -> Self {
+        let bytes = BASE64_STANDARD.decode(base64_str).unwrap();
+        let n = BigUint::from_bytes_le(&bytes);
+        RSAPubkey { n }
     }
 }
 

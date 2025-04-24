@@ -5,6 +5,63 @@ use plonky2::plonk::{
 };
 
 use super::biguint::{BigUintTarget, CircuitBuilderBiguint};
+use plonky2::iop::target::{BoolTarget, Target};
+
+use plonky2::field::extension::Extendable;
+use plonky2::hash::hash_types::RichField;
+use plonky2::util::serialization::gate_serialization::GateSerializer;
+use plonky2::{get_gate_tag_impl, impl_gate_serializer, read_gate_impl};
+
+use plonky2::gates::arithmetic_base::ArithmeticGate;
+use plonky2::gates::arithmetic_extension::ArithmeticExtensionGate;
+use plonky2::gates::base_sum::BaseSumGate;
+use plonky2::gates::constant::ConstantGate;
+use plonky2::gates::coset_interpolation::CosetInterpolationGate;
+use plonky2::gates::exponentiation::ExponentiationGate;
+use plonky2::gates::lookup::LookupGate;
+use plonky2::gates::lookup_table::LookupTableGate;
+use plonky2::gates::multiplication_extension::MulExtensionGate;
+use plonky2::gates::noop::NoopGate;
+use plonky2::gates::poseidon::PoseidonGate;
+use plonky2::gates::poseidon_mds::PoseidonMdsGate;
+use plonky2::gates::public_input::PublicInputGate;
+use plonky2::gates::random_access::RandomAccessGate;
+use plonky2::gates::reducing::ReducingGate;
+use plonky2::gates::reducing_extension::ReducingExtensionGate;
+use plonky2_u32::gates::add_many_u32::U32AddManyGate;
+use plonky2_u32::gates::arithmetic_u32::U32ArithmeticGate;
+use plonky2_u32::gates::comparison::ComparisonGate;
+use plonky2_u32::gates::range_check_u32::U32RangeCheckGate;
+use plonky2_u32::gates::subtraction_u32::U32SubtractionGate;
+
+#[derive(Debug)]
+pub struct RSAGateSerializer;
+impl<F: RichField + Extendable<D>, const D: usize> GateSerializer<F, D> for RSAGateSerializer {
+    impl_gate_serializer! {
+        RSAGateSerializer,
+        ArithmeticGate,
+        ArithmeticExtensionGate<D>,
+        BaseSumGate<2>,
+        ConstantGate,
+        CosetInterpolationGate<F, D>,
+        ExponentiationGate<F, D>,
+        LookupGate,
+        LookupTableGate,
+        MulExtensionGate<D>,
+        NoopGate,
+        PoseidonMdsGate<F, D>,
+        PoseidonGate<F, D>,
+        PublicInputGate,
+        RandomAccessGate<F, D>,
+        ReducingExtensionGate<D>,
+        ReducingGate<D>,
+        U32AddManyGate<F, D>,
+        U32ArithmeticGate<F,D>,
+        ComparisonGate<F,D>,
+        U32RangeCheckGate<F,D>,
+        U32SubtractionGate<F,D>
+    }
+}
 
 pub fn rsa_sign(value: &BigUint, private_key: &BigUint, modulus: &BigUint) -> BigUint {
     value.modpow(private_key, modulus)
@@ -37,6 +94,23 @@ pub fn verify_sig(
 ) {
     let value = pow_65537(builder, sig, modulus);
     builder.connect_biguint(hash, &value);
+}
+
+pub fn includes(
+    builder: &mut CircuitBuilder<F, D>,
+    list: &[BigUintTarget],
+    value: &BigUintTarget,
+) -> BoolTarget {
+    if list.is_empty() {
+        return builder.constant_bool(false);
+    }
+
+    let mut result = builder.eq_biguint(&list[0], value);
+    for l in &list[1..] {
+        let l_equals_value = builder.eq_biguint(l, value);
+        result = builder.or(result, l_equals_value);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -147,6 +221,47 @@ mod tests {
         let data = builder.build::<C>();
 
         pw.set_target_arr(&message, &msg)?;
+        pw.set_biguint_target(&sig, &sig_val.sig)?;
+        let proof = data.prove(pw)?;
+        data.verify(proof)
+    }
+
+    #[test]
+    fn test_rsa_keygen_and_verify_ring() -> anyhow::Result<()> {
+        let N = 10;
+
+        let config = CircuitConfig::standard_recursion_zk_config();
+        let mut builder = CircuitBuilder::<F, D>::new(config);
+        let mut pw = PartialWitness::new();
+
+        let keypairs: Vec<_> = (0..N).map(|_| RSAKeypair::new()).collect();
+        let i = 6;
+
+        let msg: Vec<GoldilocksField> = vec![12, 20, 23]
+            .iter()
+            .map(|x| GoldilocksField(*x))
+            .collect();
+        let digest = RSADigest {
+            val: compute_hash(&msg),
+        };
+        let sig_val = keypairs[i].sign(&digest);
+        let pk_val = keypairs[i].get_pubkey();
+
+        let message = builder.add_virtual_targets(3);
+        let hash = hash(&mut builder, &message);
+        let sig = builder.add_virtual_biguint_target(64);
+        let modulus = builder.add_virtual_biguint_target(64);
+        let pks = (0..N)
+            .map(|_| builder.constant_biguint(&keypairs[i].get_pubkey().n))
+            .collect::<Vec<_>>();
+
+        includes(&mut builder, &pks, &modulus);
+        verify_sig(&mut builder, &hash, &sig, &modulus);
+
+        let data = builder.build::<C>();
+
+        pw.set_target_arr(&message, &msg)?;
+        pw.set_biguint_target(&modulus, &pk_val.n)?;
         pw.set_biguint_target(&sig, &sig_val.sig)?;
         let proof = data.prove(pw)?;
         data.verify(proof)
