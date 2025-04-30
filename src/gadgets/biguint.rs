@@ -17,53 +17,74 @@ use plonky2_u32::gadgets::multiple_comparison::list_le_u32_circuit;
 use plonky2_u32::serialization::{ReadU32, WriteU32};
 use plonky2_u32::witness::{GeneratedValuesU32, WitnessU32};
 
+/// `BigUintTarget` represents a big unsigned integer in a circuit.
+/// It stores a vector of 32-bit limbs, with the least significant limb at index 0.
 #[derive(Clone, Debug)]
 pub struct BigUintTarget {
     pub limbs: Vec<U32Target>,
 }
 
 impl BigUintTarget {
+    /// Returns the number of limbs in this big integer.
     pub fn num_limbs(&self) -> usize {
         self.limbs.len()
     }
 
+    /// Get the limb at the specified index.
     pub fn get_limb(&self, i: usize) -> U32Target {
         self.limbs[i]
     }
 }
 
+/// Trait for circuit builders that can handle big unsigned integers.
+/// This trait provides the functionality to create, manipulate, and
+/// perform arithmetic operations on `BigUintTarget`s within a circuit.
 pub trait CircuitBuilderBiguint<F: RichField + Extendable<D>, const D: usize> {
+    /// Create a constant `BigUintTarget` with the provided value.
     fn constant_biguint(&mut self, value: &BigUint) -> BigUintTarget;
 
+    /// Create a `BigUintTarget` with value zero.
     fn zero_biguint(&mut self) -> BigUintTarget;
 
+    /// Connect two `BigUintTarget`s, constraining them to be equal.
     fn connect_biguint(&mut self, lhs: &BigUintTarget, rhs: &BigUintTarget);
 
+    /// Pad two `BigUintTarget`s to have the same number of limbs.
+    /// Returns the padded versions, with the shorter one extended with zero limbs.
     fn pad_biguints(
         &mut self,
         a: &BigUintTarget,
         b: &BigUintTarget,
     ) -> (BigUintTarget, BigUintTarget);
 
+    /// Check if two `BigUintTarget`s are equal, returning a boolean target.
     fn eq_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BoolTarget;
 
+    /// Compare two `BigUintTarget`s, returning a boolean target that's true if a <= b.
     fn cmp_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BoolTarget;
 
+    /// Add a virtual `BigUintTarget` to the circuit with the specified number of limbs.
     fn add_virtual_biguint_target(&mut self, num_limbs: usize) -> BigUintTarget;
 
+    /// Add a virtual public `BigUintTarget` to the circuit with the specified number of limbs.
+    /// These targets will be part of the public inputs to the circuit.
     fn add_virtual_public_biguint_target(&mut self, num_limbs: usize) -> BigUintTarget;
 
     /// Add two `BigUintTarget`s.
     fn add_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget;
 
-    /// Subtract two `BigUintTarget`s. We assume that the first is larger than the second.
+    /// Subtract two `BigUintTarget`s.
+    /// Assumes that the first is larger than the second (a >= b).
     fn sub_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget;
 
+    /// Multiply two `BigUintTarget`s.
     fn mul_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget;
 
+    /// Multiply a `BigUintTarget` by a boolean target (0 or 1).
     fn mul_biguint_by_bool(&mut self, a: &BigUintTarget, b: BoolTarget) -> BigUintTarget;
 
-    /// Returns x * y + z. This is no more efficient than mul-then-add; it's purely for convenience (only need to call one CircuitBuilder function).
+    /// Returns x * y + z.
+    /// This is a convenience method combining multiplication and addition.
     fn mul_add_biguint(
         &mut self,
         x: &BigUintTarget,
@@ -71,19 +92,25 @@ pub trait CircuitBuilderBiguint<F: RichField + Extendable<D>, const D: usize> {
         z: &BigUintTarget,
     ) -> BigUintTarget;
 
+    /// Divide one `BigUintTarget` by another, returning both quotient and remainder.
     fn div_rem_biguint(
         &mut self,
         a: &BigUintTarget,
         b: &BigUintTarget,
     ) -> (BigUintTarget, BigUintTarget);
 
+    /// Divide one `BigUintTarget` by another, returning just the quotient.
     fn div_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget;
 
+    /// Compute the remainder when dividing one `BigUintTarget` by another.
     fn rem_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget;
 
+    /// Conditionally sets a target to zero.
+    /// If if_zero is zero, then_zero must be zero.
     fn conditional_zero(&mut self, if_zero: Target, then_zero: Target);
 }
 
+/// Trait for circuit builders that can convert field elements to `BigUintTarget`s.
 pub trait CircuitBuilderBiguintFromField {
     fn field_to_biguint(&mut self, a: Target) -> BigUintTarget;
 }
@@ -91,6 +118,7 @@ pub trait CircuitBuilderBiguintFromField {
 impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
     for CircuitBuilder<F, D>
 {
+    /// Create a constant `BigUintTarget` with the given value.
     fn constant_biguint(&mut self, value: &BigUint) -> BigUintTarget {
         let limb_values = value.to_u32_digits();
         let limbs = limb_values.iter().map(|&l| self.constant_u32(l)).collect();
@@ -98,16 +126,19 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         BigUintTarget { limbs }
     }
 
+    /// Create a `BigUintTarget` with value zero.
     fn zero_biguint(&mut self) -> BigUintTarget {
         self.constant_biguint(&BigUint::zero())
     }
 
+    /// Connect two `BigUintTarget`s, constraining them to be equal.
     fn connect_biguint(&mut self, lhs: &BigUintTarget, rhs: &BigUintTarget) {
         let min_limbs = lhs.num_limbs().min(rhs.num_limbs());
         for i in 0..min_limbs {
             self.connect_u32(lhs.get_limb(i), rhs.get_limb(i));
         }
 
+        // Ensure that any extra limbs are zero
         for i in min_limbs..lhs.num_limbs() {
             self.assert_zero_u32(lhs.get_limb(i));
         }
@@ -116,6 +147,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         }
     }
 
+    /// Pad two `BigUintTarget`s to have the same number of limbs.
     fn pad_biguints(
         &mut self,
         a: &BigUintTarget,
@@ -138,6 +170,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         }
     }
 
+    /// Check if two `BigUintTarget`s are equal, returning a boolean target.
     fn eq_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BoolTarget {
         let (a, b) = self.pad_biguints(a, b);
 
@@ -149,18 +182,22 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         result
     }
 
+    /// Compare two `BigUintTarget`s, returning a boolean target that's true if a <= b.
     fn cmp_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BoolTarget {
         let (a, b) = self.pad_biguints(a, b);
 
         list_le_u32_circuit(self, a.limbs, b.limbs)
     }
 
+    /// Add a virtual `BigUintTarget` to the circuit with the specified number of limbs.
     fn add_virtual_biguint_target(&mut self, num_limbs: usize) -> BigUintTarget {
         let limbs = self.add_virtual_u32_targets(num_limbs);
 
         BigUintTarget { limbs }
     }
 
+    /// Add a virtual public `BigUintTarget` to the circuit with the specified number of limbs.
+    /// These targets will be part of the public inputs to the circuit.
     fn add_virtual_public_biguint_target(&mut self, num_limbs: usize) -> BigUintTarget {
         let limbs = (0..num_limbs)
             .map(|_| self.add_virtual_public_input())
@@ -170,6 +207,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         BigUintTarget { limbs }
     }
 
+    /// Add two `BigUintTarget`s.
     fn add_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget {
         let num_limbs = a.num_limbs().max(b.num_limbs());
 
@@ -194,6 +232,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         }
     }
 
+    /// Subtract two `BigUintTarget`s. Assumes that the first is larger than the second (a >= b).
     fn sub_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget {
         let (a, b) = self.pad_biguints(a, b);
         let num_limbs = a.limbs.len();
@@ -213,6 +252,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         }
     }
 
+    /// Multiply two `BigUintTarget`s.
     fn mul_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget {
         let total_limbs = a.limbs.len() + b.limbs.len();
 
@@ -239,6 +279,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         }
     }
 
+    /// Multiply a `BigUintTarget` by a boolean target (0 or 1).
     fn mul_biguint_by_bool(&mut self, a: &BigUintTarget, b: BoolTarget) -> BigUintTarget {
         let t = b.target;
 
@@ -251,6 +292,8 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         }
     }
 
+    /// Returns x * y + z.
+    /// This is a convenience method combining multiplication and addition.
     fn mul_add_biguint(
         &mut self,
         x: &BigUintTarget,
@@ -261,6 +304,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         self.add_biguint(&prod, z)
     }
 
+    /// Divide one `BigUintTarget` by another, returning both quotient and remainder.
     fn div_rem_biguint(
         &mut self,
         a: &BigUintTarget,
@@ -294,16 +338,20 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
         (div, rem)
     }
 
+    /// Divide one `BigUintTarget` by another, returning just the quotient.
     fn div_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget {
         let (div, _rem) = self.div_rem_biguint(a, b);
         div
     }
 
+    /// Compute the remainder when dividing one `BigUintTarget` by another.
     fn rem_biguint(&mut self, a: &BigUintTarget, b: &BigUintTarget) -> BigUintTarget {
         let (_div, rem) = self.div_rem_biguint(a, b);
         rem
     }
 
+    /// Conditionally sets a target to zero.
+    /// If if_zero is zero, then_zero must be zero.
     fn conditional_zero(&mut self, if_zero: Target, then_zero: Target) {
         let quot = self.add_virtual_target();
         self.add_simple_generator(ConditionalZeroGenerator {
@@ -317,6 +365,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
     }
 }
 
+/// Generator that enforces the condition: if if_zero is zero, then then_zero must be zero.
 #[derive(Debug)]
 struct ConditionalZeroGenerator<F: RichField + Extendable<D>, const D: usize> {
     if_zero: Target,
@@ -374,7 +423,10 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
     }
 }
 
+/// Implementation of CircuitBuilderBiguintFromField specifically for GoldilocksField
 impl CircuitBuilderBiguintFromField for CircuitBuilder<GoldilocksField, 2> {
+    /// Convert a field element to a BigUintTarget.
+    /// The field element is split into two 32-bit limbs.
     fn field_to_biguint(&mut self, a: Target) -> BigUintTarget {
         let (low, high) = self.split_low_high(a, 32, 64);
         // make sure that low = 0 if high = 2^32 - 1
@@ -386,12 +438,14 @@ impl CircuitBuilderBiguintFromField for CircuitBuilder<GoldilocksField, 2> {
     }
 }
 
+/// Trait for handling BigUintTarget in witnesses.
 pub trait WitnessBigUint<F: PrimeField64>: Witness<F> {
     fn get_biguint_target(&self, target: BigUintTarget) -> BigUint;
     fn set_biguint_target(&mut self, target: &BigUintTarget, value: &BigUint) -> Result<()>;
 }
 
 impl<T: Witness<F>, F: PrimeField64> WitnessBigUint<F> for T {
+    /// Extract a BigUint value from a witness.
     fn get_biguint_target(&self, target: BigUintTarget) -> BigUint {
         target
             .limbs
@@ -402,6 +456,7 @@ impl<T: Witness<F>, F: PrimeField64> WitnessBigUint<F> for T {
             })
     }
 
+    /// Set a BigUint value in a witness.
     fn set_biguint_target(&mut self, target: &BigUintTarget, value: &BigUint) -> Result<()> {
         let mut limbs = value.to_u32_digits();
         assert!(target.num_limbs() >= limbs.len());
@@ -413,11 +468,13 @@ impl<T: Witness<F>, F: PrimeField64> WitnessBigUint<F> for T {
     }
 }
 
+/// Trait for setting BigUintTarget values in generated values.
 pub trait GeneratedValuesBigUint<F: PrimeField> {
     fn set_biguint_target(&mut self, target: &BigUintTarget, value: &BigUint) -> Result<()>;
 }
 
 impl<F: PrimeField> GeneratedValuesBigUint<F> for GeneratedValues<F> {
+    /// Set a BigUint value in generated values.
     fn set_biguint_target(&mut self, target: &BigUintTarget, value: &BigUint) -> Result<()> {
         let mut limbs = value.to_u32_digits();
         assert!(target.num_limbs() >= limbs.len());
@@ -429,11 +486,13 @@ impl<F: PrimeField> GeneratedValuesBigUint<F> for GeneratedValues<F> {
     }
 }
 
+/// Trait for serializing BigUintTarget values.
 pub trait WriteBigUint {
     fn write_target_biguint(&mut self, x: &BigUintTarget) -> IoResult<()>;
 }
 
 impl<W: WriteU32 + Write> WriteBigUint for W {
+    /// Serialize a BigUintTarget to a writer.
     fn write_target_biguint(&mut self, x: &BigUintTarget) -> IoResult<()> {
         self.write_usize(x.num_limbs())?;
         for limb in &x.limbs {
@@ -443,11 +502,13 @@ impl<W: WriteU32 + Write> WriteBigUint for W {
     }
 }
 
+/// Trait for deserializing BigUintTarget values.
 pub trait ReadBigUint {
     fn read_target_biguint(&mut self) -> IoResult<BigUintTarget>;
 }
 
 impl ReadBigUint for Buffer<'_> {
+    /// Deserialize a BigUintTarget from a buffer.
     fn read_target_biguint(&mut self) -> IoResult<BigUintTarget> {
         let num_limbs = self.read_usize()?;
         let mut limbs = Vec::with_capacity(num_limbs);
@@ -458,6 +519,7 @@ impl ReadBigUint for Buffer<'_> {
     }
 }
 
+/// Generator for computing division and remainder of BigUintTargets.
 #[derive(Debug)]
 struct BigUintDivRemGenerator<F: RichField + Extendable<D>, const D: usize> {
     a: BigUintTarget,

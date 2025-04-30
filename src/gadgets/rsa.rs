@@ -1,17 +1,25 @@
+use crate::rsa::{RSADigest, RSAKeypair, RSAPubkey};
 use num::BigUint;
+use num::{FromPrimitive, Num};
 use plonky2::plonk::{
     circuit_builder::CircuitBuilder,
     config::{GenericConfig, PoseidonGoldilocksConfig},
 };
 
 use super::biguint::{BigUintTarget, CircuitBuilderBiguint};
+use super::biguint::{CircuitBuilderBiguintFromField, WitnessBigUint};
+use plonky2::iop::generator::generate_partial_witness;
 use plonky2::iop::target::{BoolTarget, Target};
 
 use plonky2::field::extension::Extendable;
 use plonky2::hash::hash_types::RichField;
+use plonky2::iop::witness::{PartialWitness, WitnessWrite};
+use plonky2::plonk::circuit_data::CircuitConfig;
 use plonky2::util::serialization::gate_serialization::GateSerializer;
 use plonky2::{get_gate_tag_impl, impl_gate_serializer, read_gate_impl};
 
+use plonky2::field::goldilocks_field::GoldilocksField;
+use plonky2::field::types::Field64;
 use plonky2::gates::arithmetic_base::ArithmeticGate;
 use plonky2::gates::arithmetic_extension::ArithmeticExtensionGate;
 use plonky2::gates::base_sum::BaseSumGate;
@@ -28,6 +36,7 @@ use plonky2::gates::public_input::PublicInputGate;
 use plonky2::gates::random_access::RandomAccessGate;
 use plonky2::gates::reducing::ReducingGate;
 use plonky2::gates::reducing_extension::ReducingExtensionGate;
+use plonky2::hash::poseidon::PoseidonHash;
 use plonky2_u32::gates::add_many_u32::U32AddManyGate;
 use plonky2_u32::gates::arithmetic_u32::U32ArithmeticGate;
 use plonky2_u32::gates::comparison::ComparisonGate;
@@ -96,13 +105,11 @@ pub fn verify_sig(
     builder.connect_biguint(hash, &value);
 }
 
-pub fn includes(
-    builder: &mut CircuitBuilder<F, D>,
-    list: &[BigUintTarget],
-    value: &BigUintTarget,
-) -> BoolTarget {
+pub fn includes(builder: &mut CircuitBuilder<F, D>, list: &[BigUintTarget], value: &BigUintTarget) {
     if list.is_empty() {
-        return builder.constant_bool(false);
+        let f = builder.constant_bool(false);
+        builder.assert_bool(f);
+        return;
     }
 
     let mut result = builder.eq_biguint(&list[0], value);
@@ -110,7 +117,86 @@ pub fn includes(
         let l_equals_value = builder.eq_biguint(l, value);
         result = builder.or(result, l_equals_value);
     }
-    result
+
+    builder.assert_bool(result);
+}
+
+/// Creates a ring signature proof where the signer proves they know a valid signature
+/// for one of the public keys in the ring without revealing which one.
+pub fn create_ring_proof(
+    public_keys: &[RSAPubkey],   // Public keys as RSAPubkey objects
+    private_key: &RSAKeypair,    // Private key as an RSAKeypair object
+    message: &[GoldilocksField], // Message as a vector of field elements
+) -> anyhow::Result<plonky2::plonk::proof::ProofWithPublicInputs<F, C, D>> {
+    let digest = RSADigest {
+        val: compute_hash(&message),
+    };
+    let sig_val = private_key.sign(&digest);
+    let pk_val = private_key.get_pubkey();
+
+    let n = public_keys.len();
+    let config = CircuitConfig::standard_recursion_zk_config();
+    let mut builder = CircuitBuilder::<F, D>::new(config);
+    let mut pw = PartialWitness::new();
+
+    // Add circuit targets
+    let message_targets = (0..message.len())
+        .map(|_| builder.add_virtual_public_input())
+        .collect::<Vec<_>>();
+    let sig_target = builder.add_virtual_biguint_target(64);
+    let modulus_target = builder.add_virtual_biguint_target(64);
+    let pk_targets = (0..n)
+        .map(|_| builder.add_virtual_public_biguint_target(64))
+        .collect::<Vec<_>>();
+
+    // compute a hash of the message inside the circuit
+    let hash = hash(&mut builder, &message_targets);
+    // check that the public key list includes our public key
+    includes(&mut builder, &pk_targets, &modulus_target);
+    // verify the RSA signiture using our public key
+    verify_sig(&mut builder, &hash, &sig_target, &modulus_target);
+
+    let data = builder.build::<C>();
+
+    // Set the witness values
+    pw.set_target_arr(&message_targets, &message)?;
+    pw.set_biguint_target(&modulus_target, &pk_val.n)?;
+    pw.set_biguint_target(&sig_target, &sig_val.sig)?;
+    pk_targets
+        .iter()
+        .zip(public_keys.iter())
+        .map(|(target, pubkey)| pw.set_biguint_target(target, &pubkey.n))
+        .collect::<Result<Vec<_>, _>>()?;
+    let proof = data.prove(pw)?;
+    // check that the proof verifies
+    data.verify(proof.clone())?;
+    Ok(proof)
+}
+
+fn hash(builder: &mut CircuitBuilder<F, D>, message: &[Target]) -> BigUintTarget {
+    let field_size_const = BigUint::from_u64(GoldilocksField::ORDER).unwrap();
+    let field_size = builder.constant_biguint(&field_size_const);
+    let hashed_arr = builder.hash_or_noop::<PoseidonHash>(message.into());
+    let mut hashed = builder.zero_biguint();
+    for x in hashed_arr.elements.iter() {
+        let x_big = builder.field_to_biguint(*x);
+        hashed = builder.mul_add_biguint(&hashed, &field_size, &x_big);
+    }
+    hashed
+}
+
+fn compute_hash(message: &[GoldilocksField]) -> BigUint {
+    let config = CircuitConfig::standard_recursion_config();
+    let mut builder = CircuitBuilder::<F, D>::new(config);
+    let mut message_targets = Vec::with_capacity(message.len());
+    for e in message {
+        message_targets.push(builder.constant(*e));
+    }
+    let hash_target = hash(&mut builder, &message_targets);
+    let data = builder.build_prover::<C>();
+    let witness =
+        generate_partial_witness(PartialWitness::new(), &data.prover_only, &data.common).unwrap();
+    witness.get_biguint_target(hash_target)
 }
 
 #[cfg(test)]
@@ -228,6 +314,47 @@ mod tests {
 
     #[test]
     fn test_rsa_keygen_and_verify_ring() -> anyhow::Result<()> {
+        let N = 10;
+
+        let config = CircuitConfig::standard_recursion_zk_config();
+        let mut builder = CircuitBuilder::<F, D>::new(config);
+        let mut pw = PartialWitness::new();
+
+        let keypairs: Vec<_> = (0..N).map(|_| RSAKeypair::new()).collect();
+        let i = 6;
+
+        let msg: Vec<GoldilocksField> = vec![12, 20, 23]
+            .iter()
+            .map(|x| GoldilocksField(*x))
+            .collect();
+        let digest = RSADigest {
+            val: compute_hash(&msg),
+        };
+        let sig_val = keypairs[i].sign(&digest);
+        let pk_val = keypairs[i].get_pubkey();
+
+        let message = builder.add_virtual_targets(3);
+        let hash = hash(&mut builder, &message);
+        let sig = builder.add_virtual_biguint_target(64);
+        let modulus = builder.add_virtual_biguint_target(64);
+        let pks = (0..N)
+            .map(|_| builder.constant_biguint(&keypairs[i].get_pubkey().n))
+            .collect::<Vec<_>>();
+
+        includes(&mut builder, &pks, &modulus);
+        verify_sig(&mut builder, &hash, &sig, &modulus);
+
+        let data = builder.build::<C>();
+
+        pw.set_target_arr(&message, &msg)?;
+        pw.set_biguint_target(&modulus, &pk_val.n)?;
+        pw.set_biguint_target(&sig, &sig_val.sig)?;
+        let proof = data.prove(pw)?;
+        data.verify(proof)
+    }
+
+    #[test]
+    fn test_rsa_keygen_and_verify_ring_function() -> anyhow::Result<()> {
         let N = 10;
 
         let config = CircuitConfig::standard_recursion_zk_config();

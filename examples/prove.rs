@@ -18,7 +18,9 @@ use plonky2_rsa::gadgets::biguint::{
 use plonky2_rsa::gadgets::rsa::{RSAGateSerializer, includes, verify_sig};
 use plonky2_rsa::rsa::{RSADigest, RSAKeypair, RSAPubkey};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{self, Read, Write};
 
 use base64::prelude::*;
 
@@ -29,9 +31,28 @@ struct ExportData {
     common: String,
 }
 
+#[derive(Deserialize)]
+struct PublicInputData {
+    public_keys: Vec<String>,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct PrivateKeyData {
+    private_key: String,
+    public_key: String,
+}
+
 type C = PoseidonGoldilocksConfig;
 const D: usize = 2;
 type F = <C as GenericConfig<D>>::F;
+
+fn read_file_to_string(file_path: &str) -> io::Result<String> {
+    let mut file = File::open(file_path)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok(contents)
+}
 
 fn hash(builder: &mut CircuitBuilder<F, D>, message: &[Target]) -> BigUintTarget {
     let field_size_const = BigUint::from_u64(GoldilocksField::ORDER).unwrap();
@@ -60,48 +81,23 @@ fn compute_hash(message: &[GoldilocksField]) -> BigUint {
 }
 
 fn main() -> anyhow::Result<()> {
-    let n = 10;
+    // Read public keys and message from JSON file
+    let public_input_json = read_file_to_string("public_input.json")?;
+    let public_input_data: PublicInputData = serde_json::from_str(&public_input_json)?;
 
-    let config = CircuitConfig::standard_recursion_zk_config();
-    let mut builder = CircuitBuilder::<F, D>::new(config);
-    let mut pw = PartialWitness::new();
+    // Read private key and its public key from another JSON file
+    let private_key_json = read_file_to_string("keypair.json")?;
+    let private_key_data: PrivateKeyData = serde_json::from_str(&private_key_json)?;
 
-    let keypairs: Vec<_> = (0..n).map(|_| RSAKeypair::new()).collect();
-    let i = 6;
-
-    let msg: Vec<GoldilocksField> = vec![12, 20, 23]
-        .iter()
-        .map(|x| GoldilocksField(*x))
+    // Convert message string to GoldilocksField using ASCII values
+    let message: Vec<GoldilocksField> = public_input_data
+        .message
+        .chars()
+        .map(|c| GoldilocksField(c as u64))
         .collect();
-    let digest = RSADigest {
-        val: compute_hash(&msg),
-    };
-    let sig_val = keypairs[i].sign(&digest);
-    let pk_val = keypairs[i].get_pubkey();
 
-    let message = builder.add_virtual_targets(3);
-    let hash = hash(&mut builder, &message);
-    let sig = builder.add_virtual_biguint_target(64);
-    let modulus = builder.add_virtual_biguint_target(64);
-    let pks = (0..n)
-        .map(|_| builder.add_virtual_public_biguint_target(64))
-        .collect::<Vec<_>>();
-
-    includes(&mut builder, &pks, &modulus);
-    verify_sig(&mut builder, &hash, &sig, &modulus);
-
-    let data = builder.build::<C>();
-
-    pw.set_target_arr(&message, &msg)?;
-    pw.set_biguint_target(&modulus, &pk_val.n)?;
-    pw.set_biguint_target(&sig, &sig_val.sig)?;
-    pks.iter()
-        .zip(keypairs.iter())
-        .map(|(target, value)| pw.set_biguint_target(target, &value.get_pubkey().n))
-        .collect::<Result<Vec<_>, _>>()?;
-    let proof = data.prove(pw)?;
-    println!("TEST: {:?}", proof.public_inputs);
-    data.verify(proof.clone()).unwrap();
+    // circuit stuff
+    //
 
     let gate_serializer = RSAGateSerializer;
 
@@ -128,9 +124,13 @@ fn main() -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(&export_data).unwrap();
     println!("JSON: {}", json);
 
-    let test = keypairs
+    let mut output_file = File::create("proof.json")?;
+    output_file.write_all(json.as_bytes())?;
+
+    let test = public_input_data
+        .public_keys
         .iter()
-        .map(|v| v.get_pubkey().base64())
+        .map(|v| v.clone())
         .collect::<Vec<_>>();
     println!("PUBLIC DATA: {:?}", test);
 
