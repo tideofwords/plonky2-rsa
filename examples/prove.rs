@@ -1,21 +1,20 @@
 use num::BigUint;
 use num::FromPrimitive;
 use plonky2::field::goldilocks_field::GoldilocksField;
-use plonky2::field::types::{Field, Field64};
+use plonky2::field::types::Field64;
 use plonky2::hash::poseidon::PoseidonHash;
 use plonky2::iop::generator::generate_partial_witness;
 use plonky2::iop::target::Target;
-use plonky2::iop::witness::{PartialWitness, WitnessWrite};
+use plonky2::iop::witness::PartialWitness;
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2::plonk::circuit_data::CircuitConfig;
 use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
-use plonky2::plonk::proof::ProofWithPublicInputs;
-use plonky2::util::serialization::DefaultGateSerializer;
 
 use plonky2_rsa::gadgets::biguint::{
     BigUintTarget, CircuitBuilderBiguint, CircuitBuilderBiguintFromField, WitnessBigUint,
 };
-use plonky2_rsa::gadgets::rsa::{RSAGateSerializer, includes, verify_sig};
+use plonky2_rsa::gadgets::rsa::{create_ring_circuit, create_ring_proof};
+use plonky2_rsa::gadgets::serialize::RSAGateSerializer;
 use plonky2_rsa::rsa::{RSADigest, RSAKeypair, RSAPubkey};
 
 use serde::{Deserialize, Serialize};
@@ -25,10 +24,14 @@ use std::io::{self, Read, Write};
 use base64::prelude::*;
 
 #[derive(Serialize)]
-struct ExportData {
+struct CircuitExportData {
+    verifier_circuit_data: String,
+    circuit: String,
+}
+
+#[derive(Serialize)]
+struct ProofExportData {
     proof: String,
-    verifier_only: String,
-    common: String,
 }
 
 #[derive(Deserialize)]
@@ -43,10 +46,6 @@ struct PrivateKeyData {
     public_key: String,
 }
 
-type C = PoseidonGoldilocksConfig;
-const D: usize = 2;
-type F = <C as GenericConfig<D>>::F;
-
 fn read_file_to_string(file_path: &str) -> io::Result<String> {
     let mut file = File::open(file_path)?;
     let mut contents = String::new();
@@ -54,39 +53,22 @@ fn read_file_to_string(file_path: &str) -> io::Result<String> {
     Ok(contents)
 }
 
-fn hash(builder: &mut CircuitBuilder<F, D>, message: &[Target]) -> BigUintTarget {
-    let field_size_const = BigUint::from_u64(GoldilocksField::ORDER).unwrap();
-    let field_size = builder.constant_biguint(&field_size_const);
-    let hashed_arr = builder.hash_or_noop::<PoseidonHash>(message.into());
-    let mut hashed = builder.zero_biguint();
-    for x in hashed_arr.elements.iter() {
-        let x_big = builder.field_to_biguint(*x);
-        hashed = builder.mul_add_biguint(&hashed, &field_size, &x_big);
-    }
-    hashed
-}
-
-fn compute_hash(message: &[GoldilocksField]) -> BigUint {
-    let config = CircuitConfig::standard_recursion_config();
-    let mut builder = CircuitBuilder::<F, D>::new(config);
-    let mut message_targets = Vec::with_capacity(message.len());
-    for e in message {
-        message_targets.push(builder.constant(*e));
-    }
-    let hash_target = hash(&mut builder, &message_targets);
-    let data = builder.build_prover::<C>();
-    let witness =
-        generate_partial_witness(PartialWitness::new(), &data.prover_only, &data.common).unwrap();
-    witness.get_biguint_target(hash_target)
-}
-
 fn main() -> anyhow::Result<()> {
-    // Read public keys and message from JSON file
-    let public_input_json = read_file_to_string("public_input.json")?;
+    // Parse command-line arguments
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 3 {
+        eprintln!("Usage: {} <public_input.json> <keypair.json>", args[0]);
+        std::process::exit(1);
+    }
+    let public_input_path = &args[1];
+    let keypair_path = &args[2];
+
+    // Read public keys and message from the specified JSON file
+    let public_input_json = read_file_to_string(public_input_path)?;
     let public_input_data: PublicInputData = serde_json::from_str(&public_input_json)?;
 
-    // Read private key and its public key from another JSON file
-    let private_key_json = read_file_to_string("keypair.json")?;
+    // Read private key and its public key from the specified JSON file
+    let private_key_json = read_file_to_string(keypair_path)?;
     let private_key_data: PrivateKeyData = serde_json::from_str(&private_key_json)?;
 
     // Convert message string to GoldilocksField using ASCII values
@@ -96,43 +78,45 @@ fn main() -> anyhow::Result<()> {
         .map(|c| GoldilocksField(c as u64))
         .collect();
 
-    // circuit stuff
-    //
-
-    let gate_serializer = RSAGateSerializer;
-
-    let verifier_only_bytes = data.verifier_only.to_bytes().unwrap();
-
-    println!(
-        "About to serialize common data with {} gates",
-        data.common.gates.len()
-    );
-    for (i, gate) in data.common.gates.iter().enumerate() {
-        let type_name = std::any::type_name_of_val(gate);
-        println!("Gate {}: {:?}", i, gate);
-    }
-    let common_data_bytes = data.common.to_bytes(&gate_serializer).unwrap();
-
-    let proof_bytes = bincode::serialize(&proof).unwrap(); // this one is still bincode
-
-    let export_data = ExportData {
-        proof: BASE64_STANDARD.encode(&proof_bytes),
-        verifier_only: BASE64_STANDARD.encode(&verifier_only_bytes),
-        common: BASE64_STANDARD.encode(&common_data_bytes),
-    };
-
-    let json = serde_json::to_string_pretty(&export_data).unwrap();
-    println!("JSON: {}", json);
-
-    let mut output_file = File::create("proof.json")?;
-    output_file.write_all(json.as_bytes())?;
-
-    let test = public_input_data
+    // Convert public keys into RSAPubKey
+    let public_keys = public_input_data
         .public_keys
         .iter()
-        .map(|v| v.clone())
+        .map(|value| RSAPubkey::from_base64(value))
         .collect::<Vec<_>>();
-    println!("PUBLIC DATA: {:?}", test);
+
+    // Convert private key to RSAKeypair
+    let private_key =
+        RSAKeypair::from_base64(&private_key_data.public_key, &private_key_data.private_key);
+
+    let circuit = create_ring_circuit(public_keys.len(), message.len());
+    let proof = create_ring_proof(&circuit, &public_keys, &private_key, &message)?;
+
+    let data = circuit.circuit;
+    let gate_serializer = RSAGateSerializer;
+    let verifier_only_bytes = data.verifier_only.to_bytes().unwrap();
+    let common_data_bytes = data.common.to_bytes(&gate_serializer).unwrap();
+    let proof_bytes = bincode::serialize(&proof).unwrap();
+
+    // Create CircuitExportData and ProofExportData
+    let circuit_export_data = CircuitExportData {
+        verifier_circuit_data: BASE64_STANDARD.encode(&verifier_only_bytes),
+        circuit: BASE64_STANDARD.encode(&common_data_bytes),
+    };
+
+    let proof_export_data = ProofExportData {
+        proof: BASE64_STANDARD.encode(&proof_bytes),
+    };
+
+    // Write CircuitExportData to circuit.json
+    let circuit_json = serde_json::to_string_pretty(&circuit_export_data).unwrap();
+    let mut circuit_file = File::create("circuit.json")?;
+    circuit_file.write_all(circuit_json.as_bytes())?;
+
+    // Write ProofExportData to proof.json
+    let proof_json = serde_json::to_string_pretty(&proof_export_data).unwrap();
+    let mut proof_file = File::create("proof.json")?;
+    proof_file.write_all(proof_json.as_bytes())?;
 
     Ok(())
 }

@@ -1,75 +1,29 @@
+use super::biguint::{BigUintTarget, CircuitBuilderBiguint};
+use super::biguint::{CircuitBuilderBiguintFromField, WitnessBigUint};
 use crate::rsa::{RSADigest, RSAKeypair, RSAPubkey};
 use num::BigUint;
-use num::{FromPrimitive, Num};
+use num::FromPrimitive;
+use plonky2::field::goldilocks_field::GoldilocksField;
+use plonky2::field::types::Field64;
+use plonky2::hash::poseidon::PoseidonHash;
+use plonky2::iop::generator::generate_partial_witness;
+use plonky2::iop::target::Target;
+use plonky2::iop::witness::{PartialWitness, WitnessWrite};
+use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
+use plonky2::plonk::proof::ProofWithPublicInputs;
 use plonky2::plonk::{
     circuit_builder::CircuitBuilder,
     config::{GenericConfig, PoseidonGoldilocksConfig},
 };
 
-use super::biguint::{BigUintTarget, CircuitBuilderBiguint};
-use super::biguint::{CircuitBuilderBiguintFromField, WitnessBigUint};
-use plonky2::iop::generator::generate_partial_witness;
-use plonky2::iop::target::{BoolTarget, Target};
-
-use plonky2::field::extension::Extendable;
-use plonky2::hash::hash_types::RichField;
-use plonky2::iop::witness::{PartialWitness, WitnessWrite};
-use plonky2::plonk::circuit_data::CircuitConfig;
-use plonky2::util::serialization::gate_serialization::GateSerializer;
-use plonky2::{get_gate_tag_impl, impl_gate_serializer, read_gate_impl};
-
-use plonky2::field::goldilocks_field::GoldilocksField;
-use plonky2::field::types::Field64;
-use plonky2::gates::arithmetic_base::ArithmeticGate;
-use plonky2::gates::arithmetic_extension::ArithmeticExtensionGate;
-use plonky2::gates::base_sum::BaseSumGate;
-use plonky2::gates::constant::ConstantGate;
-use plonky2::gates::coset_interpolation::CosetInterpolationGate;
-use plonky2::gates::exponentiation::ExponentiationGate;
-use plonky2::gates::lookup::LookupGate;
-use plonky2::gates::lookup_table::LookupTableGate;
-use plonky2::gates::multiplication_extension::MulExtensionGate;
-use plonky2::gates::noop::NoopGate;
-use plonky2::gates::poseidon::PoseidonGate;
-use plonky2::gates::poseidon_mds::PoseidonMdsGate;
-use plonky2::gates::public_input::PublicInputGate;
-use plonky2::gates::random_access::RandomAccessGate;
-use plonky2::gates::reducing::ReducingGate;
-use plonky2::gates::reducing_extension::ReducingExtensionGate;
-use plonky2::hash::poseidon::PoseidonHash;
-use plonky2_u32::gates::add_many_u32::U32AddManyGate;
-use plonky2_u32::gates::arithmetic_u32::U32ArithmeticGate;
-use plonky2_u32::gates::comparison::ComparisonGate;
-use plonky2_u32::gates::range_check_u32::U32RangeCheckGate;
-use plonky2_u32::gates::subtraction_u32::U32SubtractionGate;
-
-#[derive(Debug)]
-pub struct RSAGateSerializer;
-impl<F: RichField + Extendable<D>, const D: usize> GateSerializer<F, D> for RSAGateSerializer {
-    impl_gate_serializer! {
-        RSAGateSerializer,
-        ArithmeticGate,
-        ArithmeticExtensionGate<D>,
-        BaseSumGate<2>,
-        ConstantGate,
-        CosetInterpolationGate<F, D>,
-        ExponentiationGate<F, D>,
-        LookupGate,
-        LookupTableGate,
-        MulExtensionGate<D>,
-        NoopGate,
-        PoseidonMdsGate<F, D>,
-        PoseidonGate<F, D>,
-        PublicInputGate,
-        RandomAccessGate<F, D>,
-        ReducingExtensionGate<D>,
-        ReducingGate<D>,
-        U32AddManyGate<F, D>,
-        U32ArithmeticGate<F,D>,
-        ComparisonGate<F,D>,
-        U32RangeCheckGate<F,D>,
-        U32SubtractionGate<F,D>
-    }
+pub struct RingSignatureCircuit {
+    pub circuit: CircuitData<F, C, D>,
+    // public input targets
+    pub message_targets: Vec<Target>,
+    pub pk_targets: Vec<BigUintTarget>,
+    // witness targets
+    pub sig_target: BigUintTarget,
+    pub modulus_target: BigUintTarget,
 }
 
 pub fn rsa_sign(value: &BigUint, private_key: &BigUint, modulus: &BigUint) -> BigUint {
@@ -93,85 +47,6 @@ fn pow_65537(
 type C = PoseidonGoldilocksConfig;
 const D: usize = 2;
 type F = <C as GenericConfig<D>>::F;
-
-/// Verify an RSA signature.  Assumes the public exponent is 65537.
-pub fn verify_sig(
-    builder: &mut CircuitBuilder<F, D>,
-    hash: &BigUintTarget,
-    sig: &BigUintTarget,
-    modulus: &BigUintTarget,
-) {
-    let value = pow_65537(builder, sig, modulus);
-    builder.connect_biguint(hash, &value);
-}
-
-pub fn includes(builder: &mut CircuitBuilder<F, D>, list: &[BigUintTarget], value: &BigUintTarget) {
-    if list.is_empty() {
-        let f = builder.constant_bool(false);
-        builder.assert_bool(f);
-        return;
-    }
-
-    let mut result = builder.eq_biguint(&list[0], value);
-    for l in &list[1..] {
-        let l_equals_value = builder.eq_biguint(l, value);
-        result = builder.or(result, l_equals_value);
-    }
-
-    builder.assert_bool(result);
-}
-
-/// Creates a ring signature proof where the signer proves they know a valid signature
-/// for one of the public keys in the ring without revealing which one.
-pub fn create_ring_proof(
-    public_keys: &[RSAPubkey],   // Public keys as RSAPubkey objects
-    private_key: &RSAKeypair,    // Private key as an RSAKeypair object
-    message: &[GoldilocksField], // Message as a vector of field elements
-) -> anyhow::Result<plonky2::plonk::proof::ProofWithPublicInputs<F, C, D>> {
-    let digest = RSADigest {
-        val: compute_hash(&message),
-    };
-    let sig_val = private_key.sign(&digest);
-    let pk_val = private_key.get_pubkey();
-
-    let n = public_keys.len();
-    let config = CircuitConfig::standard_recursion_zk_config();
-    let mut builder = CircuitBuilder::<F, D>::new(config);
-    let mut pw = PartialWitness::new();
-
-    // Add circuit targets
-    let message_targets = (0..message.len())
-        .map(|_| builder.add_virtual_public_input())
-        .collect::<Vec<_>>();
-    let sig_target = builder.add_virtual_biguint_target(64);
-    let modulus_target = builder.add_virtual_biguint_target(64);
-    let pk_targets = (0..n)
-        .map(|_| builder.add_virtual_public_biguint_target(64))
-        .collect::<Vec<_>>();
-
-    // compute a hash of the message inside the circuit
-    let hash = hash(&mut builder, &message_targets);
-    // check that the public key list includes our public key
-    includes(&mut builder, &pk_targets, &modulus_target);
-    // verify the RSA signiture using our public key
-    verify_sig(&mut builder, &hash, &sig_target, &modulus_target);
-
-    let data = builder.build::<C>();
-
-    // Set the witness values
-    pw.set_target_arr(&message_targets, &message)?;
-    pw.set_biguint_target(&modulus_target, &pk_val.n)?;
-    pw.set_biguint_target(&sig_target, &sig_val.sig)?;
-    pk_targets
-        .iter()
-        .zip(public_keys.iter())
-        .map(|(target, pubkey)| pw.set_biguint_target(target, &pubkey.n))
-        .collect::<Result<Vec<_>, _>>()?;
-    let proof = data.prove(pw)?;
-    // check that the proof verifies
-    data.verify(proof.clone())?;
-    Ok(proof)
-}
 
 fn hash(builder: &mut CircuitBuilder<F, D>, message: &[Target]) -> BigUintTarget {
     let field_size_const = BigUint::from_u64(GoldilocksField::ORDER).unwrap();
@@ -199,6 +74,121 @@ fn compute_hash(message: &[GoldilocksField]) -> BigUint {
     witness.get_biguint_target(hash_target)
 }
 
+/// Verify an RSA signature.  Assumes the public exponent is 65537.
+pub fn verify_sig(
+    builder: &mut CircuitBuilder<F, D>,
+    hash: &BigUintTarget,
+    sig: &BigUintTarget,
+    modulus: &BigUintTarget,
+) {
+    let value = pow_65537(builder, sig, modulus);
+    builder.connect_biguint(hash, &value);
+}
+
+pub fn includes(builder: &mut CircuitBuilder<F, D>, list: &[BigUintTarget], value: &BigUintTarget) {
+    println!("LIST: {:?}", list);
+    if list.is_empty() {
+        //let f = builder.constant_bool(false);
+        //builder.assert_bool(f);
+        let zero = builder.zero();
+        let one = builder.one();
+        builder.connect(zero, one);
+        return;
+    }
+
+    let mut result = builder.eq_biguint(&list[0], value);
+    for l in &list[1..] {
+        let l_equals_value = builder.eq_biguint(l, value);
+        result = builder.or(result, l_equals_value);
+    }
+
+    let one = builder.one();
+    builder.connect(result.target, one);
+}
+
+pub fn create_ring_circuit(num_pks: usize, message_len: usize) -> RingSignatureCircuit {
+    let config = CircuitConfig::standard_recursion_zk_config();
+    let mut builder = CircuitBuilder::<F, D>::new(config);
+
+    // Add circuit targets
+    let message_targets = (0..message_len)
+        .map(|_| builder.add_virtual_public_input())
+        .collect::<Vec<_>>();
+
+    // BEGIN SOLUTION
+    // TODO: Add additional targets for the signature and public keys
+    let sig_target = builder.add_virtual_biguint_target(64);
+    let modulus_target = builder.add_virtual_biguint_target(64);
+    let pk_targets = (0..num_pks)
+        .map(|_| builder.add_virtual_public_biguint_target(64))
+        .collect::<Vec<_>>();
+    // END SOLUTION
+
+    // compute a hash of the message inside the circuit
+    let hash = hash(&mut builder, &message_targets);
+
+    // BEGIN SOLUTION
+
+    // TODO: Add circuit logic which checks the signer pk is in the pk list
+    // check that the public key list includes our public key
+    includes(&mut builder, &pk_targets, &modulus_target);
+    // TODO: Add circuit logic which checks that the RSA signature is correct
+    // verify the RSA signiture using our public key
+    verify_sig(&mut builder, &hash, &sig_target, &modulus_target);
+    // END SOLUTION
+
+    let data = builder.build::<C>();
+
+    return RingSignatureCircuit {
+        circuit: data,
+        message_targets: message_targets,
+        pk_targets: pk_targets,
+        sig_target: sig_target,
+        modulus_target: modulus_target,
+    };
+}
+
+/// Creates a ring signature proof where the signer proves they know a valid signature
+/// for one of the public keys in the ring without revealing which one.
+pub fn create_ring_proof(
+    circuit: &RingSignatureCircuit,
+    public_keys: &[RSAPubkey],   // Public keys as RSAPubkey objects
+    private_key: &RSAKeypair,    // Private key as an RSAKeypair object
+    message: &[GoldilocksField], // Message as a vector of field elements
+) -> anyhow::Result<ProofWithPublicInputs<F, C, D>> {
+    let digest = RSADigest {
+        val: compute_hash(&message),
+    };
+    let sig_val = private_key.sign(&digest);
+    let pk_val = private_key.get_pubkey();
+
+    let n = public_keys.len();
+    let mut pw = PartialWitness::new();
+
+    // Set the witness values
+    pw.set_target_arr(&circuit.message_targets, &message)?;
+
+    // BEGIN SOLUTION
+    // TODO: Set your additional targets in the partial witness
+    pw.set_biguint_target(&circuit.modulus_target, &pk_val.n)?;
+    pw.set_biguint_target(&circuit.sig_target, &sig_val.sig)?;
+    circuit
+        .pk_targets
+        .iter()
+        .zip(public_keys.iter())
+        .map(|(target, pubkey)| pw.set_biguint_target(target, &pubkey.n))
+        .collect::<Result<Vec<_>, _>>()?;
+    // END SOLUTION
+
+    let proof = circuit.circuit.prove(pw)?;
+    // check that the proof verifies
+    circuit.circuit.verify(proof.clone())?;
+    Ok(proof)
+}
+
+// BEGIN SOLUTION
+// No need to give the students all these tests though it might be nice
+// to give them something
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,3 +384,4 @@ mod tests {
         data.verify(proof)
     }
 }
+// END SOLUTION
