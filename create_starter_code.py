@@ -57,6 +57,10 @@ def process_file(file_path):
                 # Add the TODO comment and unimplemented! macro
                 new_lines.append(line)
                 new_lines.append(f'{indent}unimplemented!("{todo_string}");\n')
+            # Process only lines starting with `// TODO:`
+            if line.strip().startswith("// HINT:"):
+                # Add the HINT comment
+                new_lines.append(line)
         else:
             new_lines.append(line)
 

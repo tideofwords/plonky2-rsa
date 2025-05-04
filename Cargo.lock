@@ -516,8 +516,10 @@ dependencies = [
  "crypto-bigint",
  "crypto-primes",
  "itertools 0.14.0",
+ "log",
  "num",
  "num-bigint",
+ "num-traits",
  "plonky2",
  "plonky2_u32",
  "rand 0.9.0",
@@ -529,12 +531,13 @@ dependencies = [
 [[package]]
 name = "plonky2_u32"
 version = "0.1.0"
-source = "git+https://github.com/dgulotta/plonky2-u32.git#0dee2fbc7d6e5a4a402f3fd5a7ee4e08ade0e4c4"
+source = "git+https://github.com/emlaufer/plonky2-u32.git#e3d159474f66a53a93f256d520324458516b642a"
 dependencies = [
  "anyhow",
  "itertools 0.10.5",
  "num",
  "plonky2",
+ "serde",
 ]
 
 [[package]]

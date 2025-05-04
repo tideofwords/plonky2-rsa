@@ -3,19 +3,23 @@ use crypto_bigint::U1024;
 use crypto_primes;
 use num::{BigUint, Zero};
 
+#[derive(Clone, Debug)]
 pub struct RSAKeypair {
     pub n: BigUint,
     pub sk: BigUint,
 }
 
+#[derive(Clone, Debug)]
 pub struct RSASignature {
     pub sig: BigUint,
 }
 
+#[derive(Clone, Debug)]
 pub struct RSAPubkey {
     pub n: BigUint,
 }
 
+#[derive(Clone, Debug)]
 pub struct RSADigest {
     pub val: BigUint,
 }
@@ -106,18 +110,9 @@ impl RSAPubkey {
 
 #[cfg(test)]
 mod tests {
-    use crypto_bigint::U1024;
-    use crypto_primes;
     use num::BigUint;
 
     use super::{RSADigest, RSAKeypair};
-    #[test]
-    fn test_keygen() {
-        let p = crypto_primes::generate_prime::<U1024>(1024);
-        let q = crypto_primes::generate_prime::<U1024>(1024);
-        //let p = crypto_bigint_to_bigint(p);
-        println!("{}", p);
-    }
 
     #[test]
     fn test_sign_and_verify() {

@@ -16,10 +16,11 @@ use plonky2_u32::gadgets::arithmetic_u32::{CircuitBuilderU32, U32Target};
 use plonky2_u32::gadgets::multiple_comparison::list_le_u32_circuit;
 use plonky2_u32::serialization::{ReadU32, WriteU32};
 use plonky2_u32::witness::{GeneratedValuesU32, WitnessU32};
+use serde::{Deserialize, Serialize};
 
 /// `BigUintTarget` represents a big unsigned integer in a circuit.
 /// It stores a vector of 32-bit limbs, with the least significant limb at index 0.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BigUintTarget {
     pub limbs: Vec<U32Target>,
 }
@@ -366,8 +367,8 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBiguint<F, D>
 }
 
 /// Generator that enforces the condition: if if_zero is zero, then then_zero must be zero.
-#[derive(Debug)]
-struct ConditionalZeroGenerator<F: RichField + Extendable<D>, const D: usize> {
+#[derive(Debug, Default)]
+pub struct ConditionalZeroGenerator<F: RichField + Extendable<D>, const D: usize> {
     if_zero: Target,
     then_zero: Target,
     quot: Target,
@@ -520,8 +521,8 @@ impl ReadBigUint for Buffer<'_> {
 }
 
 /// Generator for computing division and remainder of BigUintTargets.
-#[derive(Debug)]
-struct BigUintDivRemGenerator<F: RichField + Extendable<D>, const D: usize> {
+#[derive(Debug, Default)]
+pub struct BigUintDivRemGenerator<F: RichField + Extendable<D>, const D: usize> {
     a: BigUintTarget,
     b: BigUintTarget,
     div: BigUintTarget,
