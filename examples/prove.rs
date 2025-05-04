@@ -80,7 +80,6 @@ fn read_file_to_string(file_path: &str) -> io::Result<String> {
     Ok(contents)
 }
 
-const MESSAGE_MAX_LENGTH: usize = 512;
 const MAX_NUM_PUBLIC_KEYS: usize = 32;
 
 fn main() -> anyhow::Result<()> {
@@ -124,16 +123,6 @@ fn main() -> anyhow::Result<()> {
     // Convert private key to RSAKeypair
     let private_key =
         RSAKeypair::from_base64(&public_key_data.public_key, &private_key_data.private_key);
-
-    // ensure the message is within the maximum supported
-    if message.len() > MESSAGE_MAX_LENGTH {
-        eprintln!(
-            "Message exceeds maximum length of {} characters.",
-            MESSAGE_MAX_LENGTH
-        );
-        std::process::exit(1);
-    }
-    message.resize(MESSAGE_MAX_LENGTH, GoldilocksField(0));
 
     if public_keys.len() > MAX_NUM_PUBLIC_KEYS {
         eprintln!(

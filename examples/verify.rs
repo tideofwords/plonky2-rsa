@@ -5,8 +5,10 @@ use plonky2::plonk::circuit_data::{
 };
 use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
 use plonky2::plonk::proof::ProofWithPublicInputs;
+use plonky2_rsa::gadgets::rsa::{compute_hash, compute_padded_hash};
 use plonky2_rsa::gadgets::serialize::RSAGateSerializer;
 use plonky2_rsa::rsa::RSAPubkey;
+use plonky2_rsa::utils::verify_ring_signature_proof_public_inputs;
 use serde_json::Value;
 use std::fs::File;
 use std::io::Read;
@@ -15,7 +17,6 @@ const D: usize = 2;
 type C = PoseidonGoldilocksConfig;
 type F = <C as GenericConfig<D>>::F;
 
-const MESSAGE_MAX_LENGTH: usize = 512;
 const MAX_NUM_PUBLIC_KEYS: usize = 32;
 
 fn main() {
@@ -186,7 +187,12 @@ fn verify_plonky2_ring_rsa_proof(
     };
 
     // Verify public inputs
-    if !verify_public_inputs(&proof, expected_message, &expected_public_keys) {
+    if !verify_ring_signature_proof_public_inputs(
+        &proof,
+        MAX_NUM_PUBLIC_KEYS,
+        expected_message,
+        &expected_public_keys,
+    ) {
         return Err(String::from(
             "Public key or message verification failed: Inputs don't match the proof's public inputs",
         ));
@@ -196,72 +202,4 @@ fn verify_plonky2_ring_rsa_proof(
         Ok(_) => Ok(true),
         Err(e) => Err(String::from(&format!("Proof verification failed: {:?}", e))),
     }
-}
-
-/// Helper function to verify public inputs against proof
-fn verify_public_inputs(
-    proof: &ProofWithPublicInputs<F, C, D>,
-    expected_message: &str,
-    expected_keys: &[String],
-) -> bool {
-    let mut input_index = 0;
-
-    if expected_message.len() > MESSAGE_MAX_LENGTH {
-        return false; // Message exceeds maximum length
-    }
-
-    // Verify the expected message
-    for byte in expected_message.as_bytes() {
-        if input_index >= proof.public_inputs.len()
-            || proof.public_inputs[input_index] != F::from_canonical_u32(*byte as u32)
-        {
-            return false;
-        }
-        input_index += 1;
-    }
-    // Verify the rest are zero
-    let remaining_message_inputs = MESSAGE_MAX_LENGTH - expected_message.len();
-    for _ in 0..remaining_message_inputs {
-        if input_index >= proof.public_inputs.len()
-            || proof.public_inputs[input_index] != F::from_canonical_u32(0 as u32)
-        {
-            return false;
-        }
-        input_index += 1;
-    }
-
-    // Convert expected inputs to RSAPubkey objects
-    let mut pubkeys = Vec::new();
-    for base64_str in expected_keys {
-        let pubkey = RSAPubkey::from_base64(&base64_str);
-        pubkeys.push(pubkey);
-    }
-    if pubkeys.len() > MAX_NUM_PUBLIC_KEYS {
-        return false; // Too many public keys
-    }
-
-    // Verify that each RSAPubkey's limbs match the public inputs
-    for pubkey in &pubkeys {
-        for limb in pubkey.n.to_u32_digits() {
-            if input_index >= proof.public_inputs.len()
-                || proof.public_inputs[input_index] != F::from_canonical_u32(limb)
-            {
-                return false;
-            }
-            input_index += 1;
-        }
-    }
-    // Verify the rest are zero
-    let remaining_pubkey_inputs = (MAX_NUM_PUBLIC_KEYS - pubkeys.len()) * 64;
-    for _ in 0..remaining_pubkey_inputs {
-        if input_index >= proof.public_inputs.len()
-            || proof.public_inputs[input_index] != F::from_canonical_u32(0 as u32)
-        {
-            return false;
-        }
-        input_index += 1;
-    }
-
-    // Ensure we checked all the inputs
-    return proof.public_inputs.len() == input_index;
 }

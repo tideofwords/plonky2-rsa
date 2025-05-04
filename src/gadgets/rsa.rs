@@ -37,7 +37,7 @@ pub struct RingSignatureCircuit {
     #[serde(with = "serialize_circuit_data")]
     pub circuit: CircuitData<F, C, D>,
     // public input targets
-    pub message_targets: Vec<Target>,
+    pub padded_hash_target: BigUintTarget,
     pub pk_targets: Vec<BigUintTarget>,
     // witness targets
     pub sig_target: BigUintTarget,
@@ -78,7 +78,7 @@ fn hash(builder: &mut CircuitBuilder<F, D>, message: &[Target]) -> BigUintTarget
 }
 
 /// Computes the hash value from a message
-fn compute_hash(message: &[GoldilocksField]) -> BigUint {
+pub fn compute_hash(message: &[GoldilocksField]) -> BigUint {
     let config = CircuitConfig::standard_recursion_config();
     let mut builder = CircuitBuilder::<F, D>::new(config);
     let mut message_targets = Vec::with_capacity(message.len());
@@ -112,14 +112,14 @@ pub fn compute_padded_hash(message_hash: &BigUint) -> BigUint {
     return padded_hash;
 }
 
-/// Pads the message hash with PKCS#1 v1.5 padding
+/// Pads the message hash with PKCS#1 v1.5 padding in the circuit
 /// Padding will look like: 0x00 || 0x01 || 0xff...ff || 0x00 || hash
 /// This for-loop constructs the padding byte-by-byte
 pub fn pad_hash(builder: &mut CircuitBuilder<F, D>, message_hash: &BigUintTarget) -> BigUintTarget {
     // BEGIN SOLUTION
     // TODO: In the circuit, compute the value of the padded hash
-    // HINT: The padding doesn't depend on the value of the message hash, so this
-    //       function should look very similar to compute_padded_hash
+    // HINT: The padding doesn't depend on the value of the message hash
+    // HINT: Therefore, it can look very similar to compute_padded_hash
     let num_padding_bytes = RSA_MODULUS_BYTES - HASH_BYTES - 3;
     let mut padding_bytes = BigUint::zero();
     for i in 0..num_padding_bytes {
@@ -143,11 +143,11 @@ pub fn verify_sig(
     builder: &mut CircuitBuilder<F, D>,
     padded_hash: &BigUintTarget,
     sig: &BigUintTarget,
-    modulus: &BigUintTarget,
+    public_key: &BigUintTarget,
 ) {
     // BEGIN SOLUTION
     // TODO: Write code which checks if the RSA signature is valid
-    let value = pow_65537(builder, sig, modulus);
+    let value = pow_65537(builder, sig, public_key);
     builder.connect_biguint(padded_hash, &value);
     // END SOLUTION
 }
@@ -173,20 +173,18 @@ pub fn includes(builder: &mut CircuitBuilder<F, D>, list: &[BigUintTarget], valu
     // END SOLUTION
 }
 
-pub fn create_ring_circuit(max_num_pks: usize, max_message_len: usize) -> RingSignatureCircuit {
+pub fn create_ring_circuit(max_num_pks: usize) -> RingSignatureCircuit {
     let config = CircuitConfig::standard_recursion_zk_config();
     let mut builder = CircuitBuilder::<F, D>::new(config);
 
     // Add circuit targets
-    let message_targets = (0..max_message_len)
-        .map(|_| builder.add_virtual_public_input())
-        .collect::<Vec<_>>();
-    let modulus_target = builder.add_virtual_biguint_target(64);
+    let padded_hash_target = builder.add_virtual_public_biguint_target(64);
+    let public_key_target = builder.add_virtual_biguint_target(64);
 
     // Example: Ensure modulus_target is not zero, in case we have fewer than max pks given
     let zero_biguint = builder.zero_biguint();
-    // Constrain modulus_is_zero to be 1 if modulus_target == 0, and 0 otherwise
-    let modulus_is_zero = builder.eq_biguint(&modulus_target, &zero_biguint);
+    // Constrain modulus_is_zero to be 1 if public_key_target == 0, and 0 otherwise
+    let modulus_is_zero = builder.eq_biguint(&public_key_target, &zero_biguint);
     let zero = builder.zero();
     // Ensure modulus_is_zero is 0 (aka false)
     builder.connect(modulus_is_zero.target, zero);
@@ -199,26 +197,26 @@ pub fn create_ring_circuit(max_num_pks: usize, max_message_len: usize) -> RingSi
         .collect::<Vec<_>>();
     // END SOLUTION
 
-    // Example: compute a hash of the message inside the circuit
-    let hash = hash(&mut builder, &message_targets);
-
     // BEGIN SOLUTION
     // TODO: Call the includes function to check if the modulus is in the list of public keys
-    includes(&mut builder, &pk_targets, &modulus_target);
-    // TODO: Call the pad_hash function to compute the padded hash
-    let padded_hash = pad_hash(&mut builder, &hash);
+    includes(&mut builder, &pk_targets, &public_key_target);
     // TODO: Call the verify_sig function to verify the signature
-    verify_sig(&mut builder, &padded_hash, &sig_target, &modulus_target);
+    verify_sig(
+        &mut builder,
+        &padded_hash_target,
+        &sig_target,
+        &public_key_target,
+    );
     // END SOLUTION
 
+    // Build the circuit and return it
     let data = builder.build::<C>();
-
     return RingSignatureCircuit {
         circuit: data,
-        message_targets: message_targets,
+        padded_hash_target: padded_hash_target,
         pk_targets: pk_targets,
         sig_target: sig_target,
-        modulus_target: modulus_target,
+        modulus_target: public_key_target,
     };
 }
 
@@ -234,18 +232,20 @@ pub fn create_ring_proof(
     // the message
     let message_hash = compute_hash(&message);
     let padded_hash = compute_padded_hash(&message_hash);
-    let digest = RSADigest { val: padded_hash };
+    let digest = RSADigest {
+        val: padded_hash.clone(),
+    };
     let sig_val = private_key.sign(&digest);
     let pk_val = private_key.get_pubkey();
 
     let mut pw = PartialWitness::new();
 
     // Set the witness values in pw
-    pw.set_target_arr(&circuit.message_targets, &message)?;
+    pw.set_biguint_target(&circuit.modulus_target, &pk_val.n)?;
 
     // BEGIN SOLUTION
     // TODO: Set your additional targets in the partial witness
-    pw.set_biguint_target(&circuit.modulus_target, &pk_val.n)?;
+    pw.set_biguint_target(&circuit.padded_hash_target, &padded_hash)?;
     pw.set_biguint_target(&circuit.sig_target, &sig_val.sig)?;
     circuit
         .pk_targets

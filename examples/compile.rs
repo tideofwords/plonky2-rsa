@@ -13,12 +13,11 @@ struct VerifierCircuitExportData {
     verifier_circuit_data: Option<String>,
 }
 
-const MESSAGE_MAX_LENGTH: usize = 512;
 const MAX_NUM_PUBLIC_KEYS: usize = 32;
 
 // TODO: output path
 fn main() -> anyhow::Result<()> {
-    let circuit = create_ring_circuit(MAX_NUM_PUBLIC_KEYS, MESSAGE_MAX_LENGTH);
+    let circuit = create_ring_circuit(MAX_NUM_PUBLIC_KEYS);
 
     let prover_json = serde_json::to_string_pretty(&circuit).unwrap();
 
