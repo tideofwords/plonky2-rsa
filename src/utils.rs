@@ -10,8 +10,6 @@ pub fn verify_ring_signature_proof_public_inputs(
     expected_message: &str,
     expected_keys: &[String],
 ) -> bool {
-    let mut input_index = 0;
-
     let expected_message_field_elements = expected_message
         .chars()
         .map(|byte| F::from_canonical_u32(byte as u32))

@@ -1,7 +1,6 @@
 use super::biguint::{BigUintTarget, CircuitBuilderBiguint};
 use super::biguint::{CircuitBuilderBiguintFromField, WitnessBigUint};
 use crate::gadgets::serialize::serialize_circuit_data;
-use crate::gadgets::serialize::{RSAGateSerializer, RSAGeneratorSerializer};
 use crate::rsa::{RSADigest, RSAKeypair, RSAPubkey};
 use num::BigUint;
 use num::FromPrimitive;
@@ -11,7 +10,7 @@ use plonky2::field::types::Field64;
 use plonky2::hash::poseidon::PoseidonHash;
 use plonky2::iop::generator::generate_partial_witness;
 use plonky2::iop::target::Target;
-use plonky2::iop::witness::{PartialWitness, WitnessWrite};
+use plonky2::iop::witness::PartialWitness;
 use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
 use plonky2::plonk::config::Hasher;
 use plonky2::plonk::proof::ProofWithPublicInputs;
@@ -32,6 +31,8 @@ const RSA_MODULUS_BYTES: usize = 256; // 2048 bits = 256 bytes
 // The number of bytes in a Poseidon hash output
 const HASH_BYTES: usize = <PoseidonHash as Hasher<GoldilocksField>>::HASH_SIZE;
 
+/// A struct representing a plonky2 ring signature circuit,
+/// and the targets for the inputs to the circuit
 #[derive(Serialize, Deserialize)]
 pub struct RingSignatureCircuit {
     #[serde(with = "serialize_circuit_data")]
@@ -124,6 +125,7 @@ pub fn verify_sig(
 ) {
     // BEGIN SOLUTION
     // TODO: Write code which checks if the RSA signature is valid
+    // HINT: Make sure to constrain equality with the expected value
     let value = pow_65537(builder, sig, public_key);
     builder.connect_biguint(padded_hash, &value);
     // END SOLUTION
@@ -132,6 +134,7 @@ pub fn verify_sig(
 pub fn includes(builder: &mut CircuitBuilder<F, D>, list: &[BigUintTarget], value: &BigUintTarget) {
     // BEGIN SOLUTION
     // TODO: Write circuit code which checks that value is in list
+    // HINT: Make sure the circuit proof always fails if the list is empty
     if list.is_empty() {
         let zero = builder.zero();
         let one = builder.one();
@@ -158,7 +161,8 @@ pub fn create_ring_circuit(max_num_pks: usize) -> RingSignatureCircuit {
     let padded_hash_target = builder.add_virtual_public_biguint_target(64);
     let sig_pk_target = builder.add_virtual_biguint_target(64);
 
-    // Example: Ensure modulus_target is not zero, in case we have fewer than max pks given
+    // Example: Ensure modulus_target is not zero, in case fewer than max_num_pks are given as
+    // input to the circuit
     let zero_biguint = builder.zero_biguint();
     // Constrain modulus_is_zero to be 1 if sig_pk_target == 0, and 0 otherwise
     let modulus_is_zero = builder.eq_biguint(&sig_pk_target, &zero_biguint);
@@ -246,8 +250,18 @@ mod test {
     fn test_compute_padded_hash() {
         let message_hash = BigUint::from_u64(0x12345678).unwrap();
         let expected_padded_hash = BigUint::parse_bytes(
-            "1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000000000000000000000000000000000000000000000000000000000012345678".as_bytes(), 16,
-        ).expect("Failed to parse expected padded hash");
+            "1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
+            ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
+            ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
+            ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
+            ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
+            ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\
+            ffffffffffffffffffffffffffffffffffffffffffffffff000000000000000000\
+            000000000000000000000000000000000000000012345678"
+                .as_bytes(),
+            16,
+        )
+        .expect("Failed to parse expected padded hash");
 
         // Act
         let padded_hash = compute_padded_hash(&message_hash);

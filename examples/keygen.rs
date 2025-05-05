@@ -11,11 +11,21 @@ use serde::{Deserialize, Serialize};
 #[command(author, version, about = "Generate RSA keypairs")]
 struct Args {
     /// Output file path for the keypair
-    #[arg(short, long, default_value = "key.pub.json")]
+    #[arg(
+        short,
+        long,
+        default_value = "key.pub.json",
+        help = "Path to the output file where the public key will be saved"
+    )]
     public_key_output: PathBuf,
 
     /// Output file path for the keypair
-    #[arg(short, long, default_value = "key.json")]
+    #[arg(
+        short,
+        long,
+        default_value = "key.json",
+        help = "Path to the output file where the private key will be saved"
+    )]
     private_key_output: PathBuf,
 }
 

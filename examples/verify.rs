@@ -1,13 +1,11 @@
 use base64::prelude::*;
-use plonky2::field::types::Field;
+use clap::Parser;
 use plonky2::plonk::circuit_data::{
     CommonCircuitData, VerifierCircuitData, VerifierOnlyCircuitData,
 };
 use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
 use plonky2::plonk::proof::ProofWithPublicInputs;
-use plonky2_rsa::gadgets::rsa::{compute_hash, compute_padded_hash};
 use plonky2_rsa::gadgets::serialize::RSAGateSerializer;
-use plonky2_rsa::rsa::RSAPubkey;
 use plonky2_rsa::utils::verify_ring_signature_proof_public_inputs;
 use serde_json::Value;
 use std::fs::File;
@@ -19,36 +17,31 @@ type F = <C as GenericConfig<D>>::F;
 
 const MAX_NUM_PUBLIC_KEYS: usize = 32;
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 4 {
-        eprintln!(
-            "Usage: {} <circuit_file> <proof_file> <public_input_file>",
-            args[0]
-        );
-        std::process::exit(1);
-    }
+/// Command-line arguments for the Ring Signature Verifier
+#[derive(Parser)]
+#[command(name = "Ring Signature Verifier")]
+#[command(version = "1.0")]
+#[command(about = "Verifies a ring signature proof")]
+struct Cli {
+    /// Path to the circuit JSON file
+    #[arg(help = "Path to the JSON file containing the circuit data.")]
+    circuit_file: String,
 
-    let circuit_file_path = &args[1];
-    let proof_file_path = &args[2];
-    let public_input_file_path = &args[3];
+    /// Path to the proof JSON file
+    #[arg(help = "Path to the JSON file containing the proof data.")]
+    proof_file: String,
+
+    /// Path to the public input JSON file
+    #[arg(help = "Path to the JSON file containing the public input data.")]
+    public_input_file: String,
+}
+
+fn main() {
+    // Parse command-line arguments using clap
+    let args = Cli::parse();
 
     // Read and parse the circuit file
-    let mut circuit_file = File::open(circuit_file_path).unwrap_or_else(|_| {
-        eprintln!("Failed to open circuit file: {}", circuit_file_path);
-        std::process::exit(1);
-    });
-    let mut circuit_content = String::new();
-    circuit_file
-        .read_to_string(&mut circuit_content)
-        .unwrap_or_else(|_| {
-            eprintln!("Failed to read circuit file: {}", circuit_file_path);
-            std::process::exit(1);
-        });
-    let circuit_data: Value = serde_json::from_str(&circuit_content).unwrap_or_else(|_| {
-        eprintln!("Failed to parse circuit file as JSON");
-        std::process::exit(1);
-    });
+    let circuit_data = read_and_parse_json(&args.circuit_file, "circuit file");
     let verifier_circuit_data = circuit_data["verifier_circuit_data"]
         .as_str()
         .unwrap_or_else(|| {
@@ -61,48 +54,14 @@ fn main() {
     });
 
     // Read and parse the proof file
-    let mut proof_file = File::open(proof_file_path).unwrap_or_else(|_| {
-        eprintln!("Failed to open proof file: {}", proof_file_path);
-        std::process::exit(1);
-    });
-    let mut proof_content = String::new();
-    proof_file
-        .read_to_string(&mut proof_content)
-        .unwrap_or_else(|_| {
-            eprintln!("Failed to read proof file: {}", proof_file_path);
-            std::process::exit(1);
-        });
-    let proof_data: Value = serde_json::from_str(&proof_content).unwrap_or_else(|_| {
-        eprintln!("Failed to parse proof file as JSON");
-        std::process::exit(1);
-    });
+    let proof_data = read_and_parse_json(&args.proof_file, "proof file");
     let proof = proof_data["proof"].as_str().unwrap_or_else(|| {
         eprintln!("Missing 'proof' field in proof file");
         std::process::exit(1);
     });
+
     // Read and parse the public input file
-    let mut public_input_file = File::open(public_input_file_path).unwrap_or_else(|_| {
-        eprintln!(
-            "Failed to open public input file: {}",
-            public_input_file_path
-        );
-        std::process::exit(1);
-    });
-    let mut public_input_content = String::new();
-    public_input_file
-        .read_to_string(&mut public_input_content)
-        .unwrap_or_else(|_| {
-            eprintln!(
-                "Failed to read public input file: {}",
-                public_input_file_path
-            );
-            std::process::exit(1);
-        });
-    let public_input_data: Value =
-        serde_json::from_str(&public_input_content).unwrap_or_else(|_| {
-            eprintln!("Failed to parse public input file as JSON");
-            std::process::exit(1);
-        });
+    let public_input_data = read_and_parse_json(&args.public_input_file, "public input file");
     let message = public_input_data["message"].as_str().unwrap_or_else(|| {
         eprintln!("Missing 'message' field in public input file");
         std::process::exit(1);
@@ -113,6 +72,7 @@ fn main() {
             eprintln!("Missing or invalid 'public_keys' field in public input file");
             std::process::exit(1);
         });
+
     // Convert public keys to a vector of strings
     let expected_public_keys: Vec<String> = public_keys
         .iter()
@@ -202,4 +162,20 @@ fn verify_plonky2_ring_rsa_proof(
         Ok(_) => Ok(true),
         Err(e) => Err(String::from(&format!("Proof verification failed: {:?}", e))),
     }
+}
+
+fn read_and_parse_json(file_path: &str, file_type: &str) -> Value {
+    let mut file = File::open(file_path).unwrap_or_else(|_| {
+        eprintln!("Failed to open {}: {}", file_type, file_path);
+        std::process::exit(1);
+    });
+    let mut content = String::new();
+    file.read_to_string(&mut content).unwrap_or_else(|_| {
+        eprintln!("Failed to read {}: {}", file_type, file_path);
+        std::process::exit(1);
+    });
+    serde_json::from_str(&content).unwrap_or_else(|_| {
+        eprintln!("Failed to parse {} as JSON", file_type);
+        std::process::exit(1);
+    })
 }
