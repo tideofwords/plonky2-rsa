@@ -41,7 +41,7 @@ pub struct RingSignatureCircuit {
     pub pk_targets: Vec<BigUintTarget>,
     // witness targets
     pub sig_target: BigUintTarget,
-    pub modulus_target: BigUintTarget,
+    pub sig_pk_target: BigUintTarget,
 }
 
 /// Computes the RSA signature of a given hash using the private key and modulus.
@@ -92,10 +92,12 @@ pub fn compute_hash(message: &[GoldilocksField]) -> BigUint {
     witness.get_biguint_target(hash_target)
 }
 
-/// Pads the message hash with PKCS#1 v1.5 padding
+/// Pads the message hash with PKCS#1 v1.5 padding in the circuit
+/// Padding will look like: 0x00 || 0x01 || 0xff...ff || 0x00 || hash
 pub fn compute_padded_hash(message_hash: &BigUint) -> BigUint {
-    // Padding will look like: 0x00 || 0x01 || 0xff...ff || 0x00 || hash
-    // This for-loop constructs the padding byte-by-byte
+    // BEGIN SOLUTION
+    // TODO: Compute the value of the padded hash for witness generation
+    // HINT: The size of the message hash is always HASH_BYTES
     let num_padding_bytes = RSA_MODULUS_BYTES - HASH_BYTES - 3;
     let mut padding_bytes = BigUint::zero();
     for i in 0..num_padding_bytes {
@@ -109,31 +111,6 @@ pub fn compute_padded_hash(message_hash: &BigUint) -> BigUint {
     padding_bytes += top_byte;
 
     let padded_hash = padding_bytes + message_hash.clone();
-    return padded_hash;
-}
-
-/// Pads the message hash with PKCS#1 v1.5 padding in the circuit
-/// Padding will look like: 0x00 || 0x01 || 0xff...ff || 0x00 || hash
-/// This for-loop constructs the padding byte-by-byte
-pub fn pad_hash(builder: &mut CircuitBuilder<F, D>, message_hash: &BigUintTarget) -> BigUintTarget {
-    // BEGIN SOLUTION
-    // TODO: In the circuit, compute the value of the padded hash
-    // HINT: The padding doesn't depend on the value of the message hash
-    // HINT: Therefore, it can look very similar to compute_padded_hash
-    let num_padding_bytes = RSA_MODULUS_BYTES - HASH_BYTES - 3;
-    let mut padding_bytes = BigUint::zero();
-    for i in 0..num_padding_bytes {
-        let shift = HASH_BYTES * 8 + (i + 1) * 8;
-        let padding_addend = BigUint::from_u8(0xff).unwrap() << shift;
-        padding_bytes += padding_addend;
-    }
-
-    let top_byte =
-        BigUint::from_u8(0x01).unwrap() << (HASH_BYTES * 8 + (num_padding_bytes + 1) * 8);
-    padding_bytes += top_byte;
-
-    let padding_bytes_target = builder.constant_biguint(&padding_bytes);
-    let padded_hash = builder.add_biguint(&padding_bytes_target, message_hash);
     return padded_hash;
     // END SOLUTION
 }
@@ -179,12 +156,12 @@ pub fn create_ring_circuit(max_num_pks: usize) -> RingSignatureCircuit {
 
     // Add circuit targets
     let padded_hash_target = builder.add_virtual_public_biguint_target(64);
-    let public_key_target = builder.add_virtual_biguint_target(64);
+    let sig_pk_target = builder.add_virtual_biguint_target(64);
 
     // Example: Ensure modulus_target is not zero, in case we have fewer than max pks given
     let zero_biguint = builder.zero_biguint();
-    // Constrain modulus_is_zero to be 1 if public_key_target == 0, and 0 otherwise
-    let modulus_is_zero = builder.eq_biguint(&public_key_target, &zero_biguint);
+    // Constrain modulus_is_zero to be 1 if sig_pk_target == 0, and 0 otherwise
+    let modulus_is_zero = builder.eq_biguint(&sig_pk_target, &zero_biguint);
     let zero = builder.zero();
     // Ensure modulus_is_zero is 0 (aka false)
     builder.connect(modulus_is_zero.target, zero);
@@ -199,13 +176,13 @@ pub fn create_ring_circuit(max_num_pks: usize) -> RingSignatureCircuit {
 
     // BEGIN SOLUTION
     // TODO: Call the includes function to check if the modulus is in the list of public keys
-    includes(&mut builder, &pk_targets, &public_key_target);
+    includes(&mut builder, &pk_targets, &sig_pk_target);
     // TODO: Call the verify_sig function to verify the signature
     verify_sig(
         &mut builder,
         &padded_hash_target,
         &sig_target,
-        &public_key_target,
+        &sig_pk_target,
     );
     // END SOLUTION
 
@@ -213,10 +190,10 @@ pub fn create_ring_circuit(max_num_pks: usize) -> RingSignatureCircuit {
     let data = builder.build::<C>();
     return RingSignatureCircuit {
         circuit: data,
-        padded_hash_target: padded_hash_target,
-        pk_targets: pk_targets,
-        sig_target: sig_target,
-        modulus_target: public_key_target,
+        padded_hash_target,
+        pk_targets,
+        sig_target,
+        sig_pk_target,
     };
 }
 
@@ -241,7 +218,7 @@ pub fn create_ring_proof(
     let mut pw = PartialWitness::new();
 
     // Set the witness values in pw
-    pw.set_biguint_target(&circuit.modulus_target, &pk_val.n)?;
+    pw.set_biguint_target(&circuit.sig_pk_target, &pk_val.n)?;
 
     // BEGIN SOLUTION
     // TODO: Set your additional targets in the partial witness
@@ -265,7 +242,60 @@ pub fn create_ring_proof(
 mod test {
     use super::*;
 
-    // TODO: give them some tests...
+    #[test]
+    fn test_compute_padded_hash() {
+        let message_hash = BigUint::from_u64(0x12345678).unwrap();
+        let expected_padded_hash = BigUint::parse_bytes(
+            "1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000000000000000000000000000000000000000000000000000000000012345678".as_bytes(), 16,
+        ).expect("Failed to parse expected padded hash");
+
+        // Act
+        let padded_hash = compute_padded_hash(&message_hash);
+
+        // Assert
+        assert_eq!(
+            padded_hash, expected_padded_hash,
+            "The computed padded hash does not match the expected value."
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn empty_public_keys_should_fail() {
+        let mut public_keys = vec![];
+        public_keys.resize(5, RSAPubkey { n: BigUint::zero() });
+        let private_key = RSAKeypair::new();
+        let message = vec![
+            GoldilocksField(12),
+            GoldilocksField(20),
+            GoldilocksField(23),
+        ];
+        let circuit = create_ring_circuit(5);
+        create_ring_proof(&circuit, &public_keys, &private_key, &message).unwrap();
+    }
+
+    #[test]
+    fn public_inputs_should_be_correct() {
+        let private_key = RSAKeypair::new();
+        let mut public_keys = vec![private_key.get_pubkey()];
+        public_keys.resize(5, RSAKeypair::new().get_pubkey());
+        let message = vec![
+            GoldilocksField(12),
+            GoldilocksField(20),
+            GoldilocksField(23),
+        ];
+        let circuit = create_ring_circuit(5);
+        let proof = create_ring_proof(&circuit, &public_keys, &private_key, &message).unwrap();
+
+        use crate::utils::verify_ring_signature_proof_public_inputs_fields;
+        assert!(verify_ring_signature_proof_public_inputs_fields(
+            &proof,
+            5,
+            &message,
+            &public_keys
+        ));
+        circuit.circuit.verify(proof).unwrap();
+    }
 }
 
 // BEGIN SOLUTION
@@ -333,33 +363,6 @@ mod tests {
         let hash = compute_hash(&msg);
         let sig = super::rsa_sign(&hash, &PRIVATE_KEY, &MODULUS);
         (msg, sig)
-    }
-
-    #[test]
-    fn test_message_padding() -> anyhow::Result<()> {
-        let message = "Hello, world!"
-            .chars()
-            .map(|c| GoldilocksField(c as u64))
-            .collect::<Vec<_>>();
-        let message_hash = compute_hash(&message);
-        let padded_hash = compute_padded_hash(&message_hash);
-
-        // Construct a circuit which just checks the padding
-        let config = CircuitConfig::standard_recursion_config();
-        let mut builder = CircuitBuilder::<F, D>::new(config);
-        let hash_target = builder.add_virtual_biguint_target(message_hash.to_u32_digits().len());
-        let padded_hash_target = builder.add_virtual_biguint_target(64);
-        let expected_padding = pad_hash(&mut builder, &hash_target);
-        builder.connect_biguint(&expected_padding, &padded_hash_target);
-
-        let data = builder.build::<C>();
-
-        let mut pw = PartialWitness::new();
-        pw.set_biguint_target(&hash_target, &message_hash)?;
-        pw.set_biguint_target(&padded_hash_target, &padded_hash)?;
-        let proof = data.prove(pw)?;
-        data.verify(proof)?;
-        Ok(())
     }
 
     #[test]

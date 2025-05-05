@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
     let private_key_data: PrivateKeyData = serde_json::from_str(&private_key_json)?;
 
     // Convert message string to GoldilocksField using ASCII values
-    let mut message: Vec<GoldilocksField> = public_input_data
+    let message: Vec<GoldilocksField> = public_input_data
         .message
         .chars()
         .map(|c| GoldilocksField(c as u64))

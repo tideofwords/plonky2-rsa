@@ -1,5 +1,5 @@
 use plonky2_rsa::gadgets::rsa::create_ring_circuit;
-use plonky2_rsa::gadgets::serialize::{RSAGateSerializer, RSAGeneratorSerializer};
+use plonky2_rsa::gadgets::serialize::RSAGateSerializer;
 
 use serde::Serialize;
 use std::fs::File;

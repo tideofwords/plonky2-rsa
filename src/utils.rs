@@ -17,8 +17,34 @@ pub fn verify_ring_signature_proof_public_inputs(
         .map(|byte| F::from_canonical_u32(byte as u32))
         .collect::<Vec<_>>();
 
+    // Convert expected inputs to RSAPubkey objects
+    let mut pubkeys = Vec::new();
+    for base64_str in expected_keys {
+        let pubkey = RSAPubkey::from_base64(&base64_str);
+        pubkeys.push(pubkey);
+    }
+    if pubkeys.len() > max_num_public_keys {
+        return false; // Too many public keys
+    }
+
+    return verify_ring_signature_proof_public_inputs_fields(
+        proof,
+        max_num_public_keys,
+        &expected_message_field_elements,
+        &pubkeys,
+    );
+}
+
+pub fn verify_ring_signature_proof_public_inputs_fields(
+    proof: &ProofWithPublicInputs<F, C, D>,
+    max_num_public_keys: usize,
+    expected_message: &[F],
+    expected_keys: &[RSAPubkey],
+) -> bool {
+    let mut input_index = 0;
+
     // Generate the padded hash of the message
-    let message_hash = compute_hash(&expected_message_field_elements);
+    let message_hash = compute_hash(&expected_message);
     let padded_hash = compute_padded_hash(&message_hash);
 
     // Verify the expected padded message hash
@@ -36,18 +62,8 @@ pub fn verify_ring_signature_proof_public_inputs(
         input_index += 1;
     }
 
-    // Convert expected inputs to RSAPubkey objects
-    let mut pubkeys = Vec::new();
-    for base64_str in expected_keys {
-        let pubkey = RSAPubkey::from_base64(&base64_str);
-        pubkeys.push(pubkey);
-    }
-    if pubkeys.len() > max_num_public_keys {
-        return false; // Too many public keys
-    }
-
     // Verify that each RSAPubkey's limbs match the public inputs
-    for pubkey in &pubkeys {
+    for pubkey in expected_keys {
         for limb in pubkey.n.to_u32_digits() {
             if input_index >= proof.public_inputs.len()
                 || proof.public_inputs[input_index] != F::from_canonical_u32(limb)
@@ -58,7 +74,7 @@ pub fn verify_ring_signature_proof_public_inputs(
         }
     }
     // Verify the rest are zero
-    let remaining_pubkey_inputs = (max_num_public_keys - pubkeys.len()) * 64;
+    let remaining_pubkey_inputs = (max_num_public_keys - expected_keys.len()) * 64;
     for _ in 0..remaining_pubkey_inputs {
         if input_index >= proof.public_inputs.len()
             || proof.public_inputs[input_index] != F::from_canonical_u32(0 as u32)
